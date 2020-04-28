@@ -16,6 +16,7 @@ package ansible
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -32,13 +33,15 @@ import (
 	kubemetrics "github.com/operator-framework/operator-sdk/pkg/kube-metrics"
 	"github.com/operator-framework/operator-sdk/pkg/leader"
 	"github.com/operator-framework/operator-sdk/pkg/metrics"
-	"github.com/operator-framework/operator-sdk/pkg/restmapper"
 	sdkVersion "github.com/operator-framework/operator-sdk/version"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
-
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -63,27 +66,52 @@ func printVersion() {
 func Run(flags *aoflags.AnsibleOperatorFlags) error {
 	printVersion()
 
-	namespace, found := os.LookupEnv(k8sutil.WatchNamespaceEnvVar)
-	log = log.WithValues("Namespace", namespace)
-	if found {
-		log.Info("Watching namespace.")
-	} else {
-		log.Info(fmt.Sprintf("%v environment variable not set. This operator is watching all namespaces.",
-			k8sutil.WatchNamespaceEnvVar))
-		namespace = metav1.NamespaceAll
-	}
-
 	cfg, err := config.GetConfig()
 	if err != nil {
 		log.Error(err, "Failed to get config.")
 		return err
 	}
+
+	// Set default manager options
 	// TODO: probably should expose the host & port as an environment variables
-	mgr, err := manager.New(cfg, manager.Options{
-		Namespace:          namespace,
-		MapperProvider:     restmapper.NewDynamicRESTMapper,
+	options := manager.Options{
 		MetricsBindAddress: fmt.Sprintf("%s:%d", metricsHost, metricsPort),
-	})
+		NewClient: func(cache cache.Cache, config *rest.Config, options client.Options) (client.Client, error) {
+			c, err := client.New(config, options)
+			if err != nil {
+				return nil, err
+			}
+			return &client.DelegatingClient{
+				Reader:       cache,
+				Writer:       c,
+				StatusClient: c,
+			}, nil
+		},
+	}
+
+	namespace, found := os.LookupEnv(k8sutil.WatchNamespaceEnvVar)
+	log = log.WithValues("Namespace", namespace)
+	if found {
+		if namespace == metav1.NamespaceAll {
+			log.Info("Watching all namespaces.")
+			options.Namespace = metav1.NamespaceAll
+		} else {
+			if strings.Contains(namespace, ",") {
+				log.Info("Watching multiple namespaces.")
+				options.NewCache = cache.MultiNamespacedCacheBuilder(strings.Split(namespace, ","))
+			} else {
+				log.Info("Watching single namespace.")
+				options.Namespace = namespace
+			}
+		}
+	} else {
+		log.Info(fmt.Sprintf("%v environment variable not set. Watching all namespaces.",
+			k8sutil.WatchNamespaceEnvVar))
+		options.Namespace = metav1.NamespaceAll
+	}
+
+	// Create a new manager to provide shared dependencies and start components
+	mgr, err := manager.New(cfg, options)
 	if err != nil {
 		log.Error(err, "Failed to create a new manager.")
 		return err
@@ -91,7 +119,7 @@ func Run(flags *aoflags.AnsibleOperatorFlags) error {
 
 	var gvks []schema.GroupVersionKind
 	cMap := controllermap.NewControllerMap()
-	watches, err := watches.Load(flags.WatchesFile)
+	watches, err := watches.Load(flags.WatchesFile, flags.MaxWorkers, flags.AnsibleVerbosity)
 	if err != nil {
 		log.Error(err, "Failed to load watches.")
 		return err
@@ -104,11 +132,12 @@ func Run(flags *aoflags.AnsibleOperatorFlags) error {
 		}
 
 		ctr := controller.Add(mgr, controller.Options{
-			GVK:             w.GroupVersionKind,
-			Runner:          runner,
-			ManageStatus:    w.ManageStatus,
-			MaxWorkers:      getMaxWorkers(w.GroupVersionKind, flags.MaxWorkers),
-			ReconcilePeriod: w.ReconcilePeriod,
+			GVK:              w.GroupVersionKind,
+			Runner:           runner,
+			ManageStatus:     w.ManageStatus,
+			AnsibleDebugLogs: getAnsibleDebugLog(),
+			MaxWorkers:       w.MaxWorkers,
+			ReconcilePeriod:  w.ReconcilePeriod,
 		})
 		if ctr == nil {
 			return fmt.Errorf("failed to add controller for GVK %v", w.GroupVersionKind.String())
@@ -119,7 +148,7 @@ func Run(flags *aoflags.AnsibleOperatorFlags) error {
 			WatchClusterScopedResources: w.WatchClusterScopedResources,
 			OwnerWatchMap:               controllermap.NewWatchMap(),
 			AnnotationWatchMap:          controllermap.NewWatchMap(),
-		})
+		}, w.Blacklist)
 		gvks = append(gvks, w.GroupVersionKind)
 	}
 
@@ -136,25 +165,7 @@ func Run(flags *aoflags.AnsibleOperatorFlags) error {
 		return err
 	}
 
-	// Generates operator specific metrics based on the GVKs.
-	// It serves those metrics on "http://metricsHost:operatorMetricsPort".
-	err = kubemetrics.GenerateAndServeCRMetrics(cfg, []string{namespace}, gvks, metricsHost, operatorMetricsPort)
-	if err != nil {
-		log.Info("Could not generate and serve custom resource metrics", "error", err.Error())
-	}
-
-	// Add to the below struct any other metrics ports you want to expose.
-	servicePorts := []v1.ServicePort{
-		{Port: operatorMetricsPort, Name: metrics.CRPortName, Protocol: v1.ProtocolTCP, TargetPort: intstr.IntOrString{Type: intstr.Int, IntVal: operatorMetricsPort}},
-		{Port: metricsPort, Name: metrics.OperatorPortName, Protocol: v1.ProtocolTCP, TargetPort: intstr.IntOrString{Type: intstr.Int, IntVal: metricsPort}},
-	}
-	// Create Service object to expose the metrics port(s).
-	// TODO: probably should expose the port as an environment variable
-	_, err = metrics.CreateMetricsService(context.TODO(), cfg, servicePorts)
-	if err != nil {
-		log.Error(err, "Exposing metrics port failed.")
-		return err
-	}
+	addMetrics(context.TODO(), cfg, gvks)
 
 	done := make(chan error)
 
@@ -189,27 +200,86 @@ func Run(flags *aoflags.AnsibleOperatorFlags) error {
 	return nil
 }
 
-// if the WORKER_* environment variable is set, use that value.
-// Otherwise, use the value from the CLI. This is definitely
-// counter-intuitive but it allows the operator admin adjust the
-// number of workers based on their cluster resources. While the
-// author may use the CLI option to specify a suggested
-// configuration for the operator.
-func getMaxWorkers(gvk schema.GroupVersionKind, defValue int) int {
-	envVar := strings.ToUpper(strings.Replace(
-		fmt.Sprintf("WORKER_%s_%s", gvk.Kind, gvk.Group),
-		".",
-		"_",
-		-1,
-	))
-	switch maxWorkers, err := strconv.Atoi(os.Getenv(envVar)); {
-	case maxWorkers <= 1:
-		return defValue
-	case err != nil:
-		// we don't care why we couldn't parse it just use default
-		log.Info("Failed to parse %v from environment. Using default %v", envVar, defValue)
-		return defValue
-	default:
-		return maxWorkers
+// addMetrics will create the Services and Service Monitors to allow the operator export the metrics by using
+// the Prometheus operator
+func addMetrics(ctx context.Context, cfg *rest.Config, gvks []schema.GroupVersionKind) {
+	// Get the namespace the operator is currently deployed in.
+	operatorNs, err := k8sutil.GetOperatorNamespace()
+	if err != nil {
+		if errors.Is(err, k8sutil.ErrRunLocal) {
+			log.Info("Skipping CR metrics server creation; not running in a cluster.")
+			return
+		}
 	}
+
+	if err := serveCRMetrics(cfg, operatorNs, gvks); err != nil {
+		log.Info("Could not generate and serve custom resource metrics", "error", err.Error())
+	}
+
+	// Add to the below struct any other metrics ports you want to expose.
+	servicePorts := []v1.ServicePort{
+		{Port: metricsPort, Name: metrics.OperatorPortName, Protocol: v1.ProtocolTCP,
+			TargetPort: intstr.IntOrString{Type: intstr.Int, IntVal: metricsPort}},
+		{Port: operatorMetricsPort, Name: metrics.CRPortName, Protocol: v1.ProtocolTCP,
+			TargetPort: intstr.IntOrString{Type: intstr.Int, IntVal: operatorMetricsPort}},
+	}
+
+	// Create Service object to expose the metrics port(s).
+	service, err := metrics.CreateMetricsService(ctx, cfg, servicePorts)
+	if err != nil {
+		log.Info("Could not create metrics Service", "error", err.Error())
+		return
+	}
+
+	// CreateServiceMonitors will automatically create the prometheus-operator ServiceMonitor resources
+	// necessary to configure Prometheus to scrape metrics from this operator.
+	services := []*v1.Service{service}
+
+	// The ServiceMonitor is created in the same namespace where the operator is deployed
+	_, err = metrics.CreateServiceMonitors(cfg, operatorNs, services)
+	if err != nil {
+		log.Info("Could not create ServiceMonitor object", "error", err.Error())
+		// If this operator is deployed to a cluster without the prometheus-operator running, it will return
+		// ErrServiceMonitorNotPresent, which can be used to safely skip ServiceMonitor creation.
+		if err == metrics.ErrServiceMonitorNotPresent {
+			log.Info("Install prometheus-operator in your cluster to create ServiceMonitor objects", "error", err.Error())
+		}
+	}
+}
+
+// serveCRMetrics takes GVKs retrieved from watches and generates metrics based on those types.
+// It serves those metrics on "http://metricsHost:operatorMetricsPort".
+func serveCRMetrics(cfg *rest.Config, operatorNs string, gvks []schema.GroupVersionKind) error {
+	// The metrics will be generated from the namespaces which are returned here.
+	// NOTE that passing nil or an empty list of namespaces in GenerateAndServeCRMetrics will result in an error.
+	ns, err := kubemetrics.GetNamespacesForMetrics(operatorNs)
+	if err != nil {
+		return err
+	}
+
+	// Generate and serve custom resource specific metrics.
+	err = kubemetrics.GenerateAndServeCRMetrics(cfg, ns, gvks, metricsHost, operatorMetricsPort)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// getAnsibleDebugLog return the value from the ANSIBLE_DEBUG_LOGS it order to
+// print the full Ansible logs
+func getAnsibleDebugLog() bool {
+	const envVar = "ANSIBLE_DEBUG_LOGS"
+	val := false
+	if envVal, ok := os.LookupEnv(envVar); ok {
+		if i, err := strconv.ParseBool(envVal); err != nil {
+			log.Info("Could not parse environment variable as an boolean; using default value",
+				"envVar", envVar, "default", val)
+		} else {
+			val = i
+		}
+	} else if !ok {
+		log.Info("Environment variable not set; using default value", "envVar", envVar,
+			envVar, val)
+	}
+	return val
 }

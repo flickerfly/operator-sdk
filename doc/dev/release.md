@@ -2,7 +2,7 @@
 
 Making an Operator SDK release involves:
 
-- Updating `CHANGELOG.md`.
+- Updating `CHANGELOG.md` and migration guide.
 - Tagging and signing a git commit and pushing the tag to GitHub.
 - Building a release binary and signing the binary
 - Creating a release by uploading binary, signature, and `CHANGELOG.md` updates for the release to GitHub.
@@ -22,9 +22,9 @@ As the Operator SDK interacts directly with the Kubernetes API, certain API feat
 
 ### Operating systems and architectures
 
-Release binaries will be built for the `x86_64` architecture for both GNU Linux and MacOS Darwin platforms and for the `ppc64le` architecture for GNU Linux.
+Release binaries will be built for the `x86_64` architecture for MacOS Darwin platform and for the following GNU Linux architectures: `x86_64`, `ppc64le`, `s390x`.
 
-Base images for ansible-operator, helm-operator, and scorecard-proxy will be built for the `x86_64` architecture for GNU Linux. Base images for the `ppc64le` architecture for GNU Linux are a work-in-progress.
+Base images for ansible-operator, helm-operator, and scorecard-proxy will be built for the following GNU Linux architectures: `x86_64`, `ppc64le`, `s390x`.
 
 Support for the Windows platform is not on the roadmap at this time.
 
@@ -43,6 +43,28 @@ Make sure you've [uploaded your GPG key][link-github-gpg-key-upload] and configu
 ```bash
 $ git config [--global] user.signingkey "$GPG_KEY_ID"
 $ git config [--global] user.email "$GPG_EMAIL"
+```
+
+Also, make sure that you setup the git gpg config as follows.
+```bash
+$ cat ~/.gnupg/gpg.conf
+default-key $GPG_KEY_ID
+```
+
+**NOTE** If you do a release from an OSX machine, you need to configure `gnu-gpg` to sign the release's tag:
+- Install the requirements by running: `brew install gpg2 gnupg pinentry-mac`
+- Append the following to your ~/.bash_profile or ~/.bashrc or ~/.zshrc
+```
+export GPG_TTY=`tty`
+```
+- Restart your Terminal or source your ~/.*rc file 
+- Then, make sure git uses gpg2 and not gpg
+```bash
+$ git config --global gpg.program gpg2 
+```
+- To make sure gpg2 itself is working
+```bash
+$ echo "test" | gpg2 --clearsign
 ```
 
 ## GitHub release information
@@ -171,7 +193,7 @@ $ git push origin release-v1.3.1
 
 Create a PR from `release-v1.3.1` to `v1.3.x`. Once CI passes and your PR is merged, continue to step 1.
 
-### 1. Create a PR for release version and CHANGELOG.md updates
+### 1. Create a PR for release version, CHANGELOG.md, and migration guide updates
 
 Once all PR's needed for a release have been merged, branch from `master`:
 
@@ -193,22 +215,22 @@ Create a new branch to push release commits:
 $ git checkout -b release-v1.3.0
 ```
 
+Run the CHANGELOG and migration guide generator:
+
+```sh
+$ GEN_CHANGELOG_TAG=v1.3.0 make gen-changelog
+```
+
 Commit the following changes:
 
 - `version/version.go`: update `Version` to `v1.3.0`.
-- `internal/pkg/scaffold/gopkgtoml.go`, under the `[[constraint]]` for `github.com/operator-framework/operator-sdk`:
-  - Comment out `branch = "master"`
-  - Un-comment `version = "v1.2.0"`
-  - Change `v1.2.0` to `v1.3.0`
-- `internal/pkg/scaffold/ansible/gopkgtoml.go`: same as for `internal/pkg/scaffold/gopkgtoml.go`.
-- `internal/pkg/scaffold/helm/gopkgtoml.go`: same as for `internal/pkg/scaffold/gopkgtoml.go`.
-- `internal/pkg/scaffold/go_mod.go`, in the `replace` block for `github.com/operator-framework/operator-sdk`:
-  - Add the following `replace` line to the bottom of `go.mod`: `replace github.com/operator-framework/operator-sdk => github.com/operator-framework/operator-sdk v1.3.0`.
-  - If a `replace` line already exists, change the version to `v1.3.0`.
-- `internal/pkg/scaffold/helm/go_mod.go`: same as for `internal/pkg/scaffold/go_mod.go`.
-- `internal/pkg/scaffold/ansible/go_mod.go`: same as for `internal/pkg/scaffold/go_mod.go`.
-- `CHANGELOG.md`: update the `## Unreleased` header to `## v1.3.0`.
+- `internal/scaffold/go_mod.go`, change the `require` line version for `github.com/operator-framework/operator-sdk` from `master` to `v1.3.0`.
+- `internal/scaffold/helm/go_mod.go`: same as for `internal/scaffold/go_mod.go`.
+- `internal/scaffold/ansible/go_mod.go`: same as for `internal/scaffold/go_mod.go`.
 - `doc/user/install-operator-sdk.md`: update the linux and macOS URLs to point to the new release URLs.
+- `CHANGELOG.md`: commit changes (updated by changelog generation).
+- `website/content/en/docs/migration/v1.3.0.md`: commit changes (created by changelog generation).
+- `changelog/fragments/*`: commit deleted fragment files (deleted by changelog generation).
 
 _(Non-patch releases only)_ Lock down the master branch to prevent further commits between this and step 4. See [this section](#locking-down-branches) for steps to do so.
 
@@ -224,6 +246,8 @@ Call the script with the only argument being the new SDK version:
 $ ./release.sh v1.3.0
 ```
 
+**NOTE** The `./release.sh` script requires `GNU sed` and the `GNU make` instead of the default installed sed. Install them with: `brew install gnu-sed` and `brew install make`, then ensure they are present in your `$PATH`.
+
 Release binaries and signatures will be in `build/`. Both binary and signature file names contain version, architecture, and platform information; signature file names correspond to the binary they were generated from suffixed with `.asc`. For example, signature file `operator-sdk-v1.3.0-x86_64-apple-darwin.asc` was generated from a binary named `operator-sdk-v1.3.0-x86_64-apple-darwin`. To verify binaries and tags, see the [verification section](#verifying-a-release).
 
 **Note:** you must have both [`git`][doc-git-default-key] and [`gpg`][doc-gpg-default-key] default PGP keys set locally for `release.sh` to run without error. Additionally you must add your PGP key to a [public-key-server](#release-signing).
@@ -238,35 +262,14 @@ Once this tag passes CI, go to step 3. For more info on tagging, see the [releas
 
 **Note:** If CI fails for some reason, you will have to revert the tagged commit, re-commit, and make a new PR.
 
-### 3. Create a PR for post-release version and CHANGELOG.md updates
+### 3. Create a PR for post-release version updates
 
 Check out a new branch from master (or use your `release-v1.3.0` branch) and commit the following changes:
 
 - `version/version.go`: update `Version` to `v1.3.0+git`.
-- `internal/pkg/scaffold/gopkgtoml.go`, under the `[[constraint]]` for `github.com/operator-framework/operator-sdk`:
-  - Comment out `version = "v1.3.0"`
-  - Un-comment `branch = "master"`
-- `internal/pkg/scaffold/ansible/gopkgtoml.go`: same as for `internal/pkg/scaffold/gopkgtoml.go`.
-- `internal/pkg/scaffold/helm/gopkgtoml.go`: same as for `internal/pkg/scaffold/gopkgtoml.go`.
-- `internal/pkg/scaffold/go_mod.go`, in the `replace` block for `github.com/operator-framework/operator-sdk`:
-  - Remove the `replace` line at the bottom of `go.mod`: `replace github.com/operator-framework/operator-sdk => github.com/operator-framework/operator-sdk v1.3.0`.
-- `internal/pkg/scaffold/helm/go_mod.go`: same as for `internal/pkg/scaffold/go_mod.go`.
-- `internal/pkg/scaffold/ansible/go_mod.go`: same as for `internal/pkg/scaffold/go_mod.go`.
-- `CHANGELOG.md`: add the following as a new set of headers above `## v1.3.0`:
-
-    ```markdown
-    ## Unreleased
-
-    ### Added
-
-    ### Changed
-
-    ### Deprecated
-
-    ### Removed
-
-    ### Bug Fixes
-    ```
+- `internal/scaffold/go_mod.go`, change the `require` line version for `github.com/operator-framework/operator-sdk` from `v1.3.0` to `master`.
+- `internal/scaffold/helm/go_mod.go`: same as for `internal/scaffold/go_mod.go`.
+- `internal/scaffold/ansible/go_mod.go`: same as for `internal/scaffold/go_mod.go`.
 
 Create a new PR for this branch, targetting the `master` branch. Once this PR passes CI and is merged, `master` can be unfrozen.
 
@@ -298,7 +301,7 @@ To github.com:operator-framework/operator-sdk.git
  * [new branch]      v1.3.x -> v1.3.x
 ```
 
-Now that the branch exists, you need to make the post-release PR for the new release branch. To do this, simply follow the same steps as in [step 3](#3-create-a-pr-for-post-release-version-and-changelogmd-updates) with the addition of changing the branch name in the `gopkgtoml` scaffold from `master` to the new branch (for example, `v1.3.x`). Then, make the PR against the new branch.
+Now that the branch exists, you need to make the post-release PR for the new release branch. To do this, simply follow the same steps as in [step 3](#3-create-a-pr-for-post-release-version-and-changelogmd-updates) with the addition of changing the branch name in the `go.mod` scaffold from `master` to the new branch (for example, `v1.3.x`). Then, make the PR against the new branch.
 
 ### 6. Updating the Homebrew formula
 

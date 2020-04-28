@@ -27,9 +27,9 @@ metadata:
 `kubectl edit` can be used to update the resources by hand. See below
 for example `ownerReference` and `annotations`.
 
-## For objects in the same namespace as the Owner (CRD)
+## For objects in the same namespace as the Owner (CR)
 
-Dependent resources `within the same namespace as the owning CR` are
+Dependent resources *within the same namespace as the owning CR* are
 tracked with the `ownerReference` field.
 
 `ownerReference` structure:
@@ -50,7 +50,7 @@ metadata:
       uid: ad834522-d9a5-4841-beac-991ff3798c00
 ```
 
-## For objects which are NOT in the same namespace as the Owner (CRD)
+## For objects which are NOT in the same namespace as the Owner (CR)
 
 An `annotation` is used instead of an `ownerReference` if the dependent
 resource is in a different namespace than the CR, or the dependent
@@ -62,7 +62,7 @@ resource is a cluster level resource.
 
 **NOTE**: The {group} can be found by splitting the `apiVersion`
 metadata of the CR, into `group` and `version`. As an example, 
-[this apiVersion field](https://github.com/operator-framework/operator-sdk-samples/blob/master/ansible/memcached-operator/deploy/crds/cache_v1alpha1_memcached_cr.yaml#L1)
+[this apiVersion field](https://github.com/operator-framework/operator-sdk-samples/blob/master/ansible/memcached-operator/deploy/crds/cache.example.com_v1alpha1_memcached_cr.yaml#L1)
 gives us the group `cache.example.com`.
 
 **Example Annotation:**
@@ -133,7 +133,7 @@ This file can be used as-is without user adjustments.
     - name: Import user variables
       include_vars: vars.yml
     - name: Retrieve owning resource
-      k8s_facts:
+      community.kubernetes.k8s_info:
         api_version: "{{ owning_resource.apiVersion }}"
         kind: "{{ owning_resource.kind }}"
         name: "{{ owning_resource.name }}"
@@ -144,7 +144,7 @@ This file can be used as-is without user adjustments.
       include_tasks: each_resource.yml
       loop: "{{ resources_to_own }}"
       vars:
-        to_be_owned: '{{ q("k8s",
+        to_be_owned: '{{ q("community.kubernetes.k8s",
           api_version=item.apiVersion,
           kind=item.kind,
           resource_name=item.name,
@@ -168,7 +168,7 @@ This file can be used as-is without user adjustments.
     - to_be_owned.metadata.namespace == owning_resource.namespace
     - (to_be_owned.metadata.ownerReferences is not defined) or
       (owner_reference not in to_be_owned.metadata.ownerReferences)
-  k8s:
+  community.kubernetes.k8s:
     state: present
     resource_definition:
       apiVersion: "{{ to_be_owned.apiVersion }}"
@@ -180,7 +180,7 @@ This file can be used as-is without user adjustments.
 
 - name: Patch resource with owner annotation
   when: to_be_owned.namespace is not defined or to_be_owned.namespace != owning_resource.namespace
-  k8s:
+  community.kubernetes.k8s:
     state: present
     resource_definition:
       apiVersion: "{{ to_be_owned.apiVersion }}"

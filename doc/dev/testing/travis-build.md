@@ -46,7 +46,7 @@ The Go, Ansible, and Helm tests then differ in what tests they run.
 4. Run [go e2e tests][go-e2e].
     1. Scaffold a project using `hack/tests/scaffolding/e2e-go-scaffold.sh`
     2. Build `memcached-operator` image to be used in tests
-    3. Run scaffolded project e2e tests using `operator-sdk up local`
+    3. Run scaffolded project e2e tests using `operator-sdk run --local`
         1. Run cluster test (namespace is auto-generated and deleted by test framework).
             1. Deploy operator and required resources to the cluster.
             2. Run the leader election test.
@@ -68,30 +68,20 @@ The Go, Ansible, and Helm tests then differ in what tests they run.
                 3. Perform linting of the existing metrics.
                 4. Perform checks on each custom resource generated metric and makes sure the name, type, value, labels and metric are correct.
         2. Run local test (namespace is auto-generated and deleted by test framework).
-            1. Start operator using `up local` subcommand.
+            1. Start operator using the `run --local` subcommand.
             2. Run memcached scale test (described in step 4.3.1.3)
     4. Run [TLS library tests][tls-tests].
         1. This test runs multiple simple tests of the operator-sdk's TLS library. The tests run in parallel and each tests runs in its own namespace.
 
 ### Ansible tests
 
-1. Run [ansible molecule tests][ansible-molecule]. (`make test/e2e/ansible-molecule)
+1. Run [ansible molecule tests][ansible-molecule]. (`make test-e2e-ansible-molecule)
     1. Create and configure a new ansible type memcached-operator.
     2. Create cluster resources.
     3. Run `operator-sdk test local` to run ansible molecule tests
-    4. Change directory to [`test/ansible-inventory`][ansible-inventory] and run `operator-sdk test local`
+    4. Change directory to [`test/ansible`][ansible-test] and run `operator-sdk test local`
 
 **NOTE**: All created resources, including the namespace, are deleted using a bash trap when the test finishes
-
-**NOTE** If you are using a MacOSX SO then will be required replace the sed command in the `hack/tests/e2e-ansible-molecule.sh` as the following example.
-
-```sh
-# Use the following sed command to check it on macOsX.
-# More info: https://www.mkyong.com/mac/sed-command-hits-undefined-label-error-on-mac-os-x/
-sed -i "" 's|\(FROM quay.io/operator-framework/ansible-operator\)\(:.*\)\?|\1:dev|g' build/Dockerfile
-# The following code is the default used (Not valid for MacOSX)
-# sed -i 's|\(FROM quay.io/operator-framework/ansible-operator\)\(:.*\)\?|\1:dev|g' build/Dockerfile
-```
 
 ### Helm Tests
 
@@ -126,7 +116,7 @@ The markdown test does not create a new cluster and runs in a barebones Travis V
 [go-e2e]: ../../../hack/tests/e2e-go.sh
 [tls-tests]: ../../../test/e2e/tls_util_test.go
 [ansible-molecule]: ../../../hack/tests/e2e-ansible-molecule.sh
-[ansible-inventory]: ../../../test/ansible-inventory
+[ansible-test]: ../../../test/ansible
 [helm-e2e]: ../../../hack/tests/e2e-helm.sh
 [helm-base]: ../../../hack/image/helm/scaffold-helm-image.go
 [marker-github]: https://github.com/crawford/marker

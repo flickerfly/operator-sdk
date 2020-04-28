@@ -41,14 +41,13 @@ The following workflow is for a new **Helm** operator:
 ## Prerequisites
 
 - [git][git_tool]
-- [go][go_tool] version v1.12+.
+- [go][go_tool] version v1.13+.
 - [mercurial][mercurial_tool] version 3.9+
 - [docker][docker_tool] version 17.03+.
   - Alternatively [podman][podman_tool] `v1.2.0+` or [buildah][buildah_tool] `v1.7+`
-- [kubectl][kubectl_tool] version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
-- Optional: [dep][dep_tool] version v0.5.0+.
-- Optional: [delve](https://github.com/go-delve/delve/tree/master/Documentation/installation) version 1.2.0+ (for `up local --enable-delve`).
+- [kubectl][kubectl_tool] version v1.12.0+.
+- Access to a Kubernetes v1.12.0+ cluster.
+- Optional: [delve](https://github.com/go-delve/delve/tree/master/Documentation/installation) version 1.2.0+ (for `run --local --enable-delve`).
 
 ## Quick Start
 
@@ -65,7 +64,6 @@ Follow the steps in the [installation guide][install_guide] to learn how to inst
 $ mkdir -p $HOME/projects/example-inc/
 # Create a new app-operator project
 $ cd $HOME/projects/example-inc/
-$ export GO111MODULE=on
 $ operator-sdk new app-operator --repo github.com/example-inc/app-operator
 $ cd app-operator
 
@@ -75,14 +73,22 @@ $ operator-sdk add api --api-version=app.example.com/v1alpha1 --kind=AppService
 # Add a new controller that watches for AppService
 $ operator-sdk add controller --api-version=app.example.com/v1alpha1 --kind=AppService
 
+# Set the username variable
+$ export USERNAME=<username>
+
 # Build and push the app-operator image to a public registry such as quay.io
-$ operator-sdk build quay.io/example/app-operator
-$ docker push quay.io/example/app-operator
+$ operator-sdk build quay.io/$USERNAME/app-operator
+
+# Login to public registry such as quay.io
+$ docker login quay.io
+
+# Push image
+$ docker push quay.io/$USERNAME/app-operator
 
 # Update the operator manifest to use the built image name (if you are performing these steps on OSX, see note below)
-$ sed -i 's|REPLACE_IMAGE|quay.io/example/app-operator|g' deploy/operator.yaml
+$ sed -i "s|REPLACE_IMAGE|quay.io/$USERNAME/app-operator|g" deploy/operator.yaml
 # On OSX use:
-$ sed -i "" 's|REPLACE_IMAGE|quay.io/example/app-operator|g' deploy/operator.yaml
+$ sed -i "" "s|REPLACE_IMAGE|quay.io/$USERNAME/app-operator|g" deploy/operator.yaml
 
 # Setup Service Account
 $ kubectl create -f deploy/service_account.yaml
@@ -131,7 +137,7 @@ $ kubectl delete -f deploy/crds/app.example.com_appservices_crd.yaml
 ```
 
 **Note:** Follow the steps in the [Getting Started Repository][getting_started] to learn how to develop your Operator projects.
- 
+
 ## Command Line Interface
 
 To learn more about the SDK CLI, see the [SDK CLI Reference][sdk_cli_ref], or run `operator-sdk [command] -h`.
@@ -141,6 +147,14 @@ To learn more about the SDK CLI, see the [SDK CLI Reference][sdk_cli_ref], or ru
 To learn more about the writing an operator in Go, see the [user guide][guide].
 
 The SDK also supports developing an operator using Ansible or Helm. See the [Ansible][ansible_user_guide] and [Helm][helm_user_guide] operator user guides.
+
+### Operator capability level
+
+Note that each operator type has a different set of capabilities. When choosing what type to use for your project, it is important to understand the features and limitations of each of the project types and the use cases for your operator.
+
+![operator-capability-level](./doc/images/operator-capability-level.png)
+
+Find more details about the various levels and the feature requirements for them in the [capability level documentation][capability_levels].
 
 ## Samples
 
@@ -167,7 +181,7 @@ Operator SDK is under Apache 2.0 license. See the [LICENSE][license_file] file f
 [install_guide]: ./doc/user/install-operator-sdk.md
 [operator_link]: https://coreos.com/operators/
 [proposals_docs]: ./doc/proposals
-[sdk_cli_ref]: ./doc/sdk-cli-reference.md
+[sdk_cli_ref]: ./doc/cli
 [guide]: ./doc/user-guide.md
 [samples]: https://github.com/operator-framework/operator-sdk-samples
 [of-home]: https://github.com/operator-framework
@@ -175,7 +189,6 @@ Operator SDK is under Apache 2.0 license. See the [LICENSE][license_file] file f
 [contrib]: ./CONTRIBUTING.MD
 [bug_guide]:./doc/dev/reporting_bugs.md
 [license_file]:./LICENSE
-[dep_tool]:https://golang.github.io/dep/docs/installation.html
 [git_tool]:https://git-scm.com/downloads
 [go_tool]:https://golang.org/dl/
 [mercurial_tool]:https://www.mercurial-scm.org/downloads
@@ -188,4 +201,4 @@ Operator SDK is under Apache 2.0 license. See the [LICENSE][license_file] file f
 [helm_user_guide]:./doc/helm/user-guide.md
 [faq]: ./doc/faq.md
 [getting_started]: https://github.com/operator-framework/getting-started/blob/master/README.md
-
+[capability_levels]: ./doc/operator-capabilities.md

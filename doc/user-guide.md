@@ -2,7 +2,6 @@
 
 This guide walks through an example of building a simple memcached-operator using the operator-sdk CLI tool and controller-runtime library API. To learn how to use Ansible or Helm to create an operator, see the [Ansible Operator User Guide][ansible_user_guide] or the [Helm Operator User Guide][helm_user_guide]. The rest of this document will show how to program an operator in Go.
 
-
 ## Prerequisites
 
 - [git][git_tool]
@@ -11,7 +10,6 @@ This guide walks through an example of building a simple memcached-operator usin
 - [docker][docker_tool] version 17.03+.
 - [kubectl][kubectl_tool] version v1.11.3+.
 - Access to a Kubernetes v1.11.3+ cluster.
-- Optional: [dep][dep_tool] version v0.5.0+.
 
 **Note**: This guide uses [minikube][minikube_tool] version v0.25.0+ as the local Kubernetes cluster and [quay.io][quay_link] for the public registry.
 
@@ -34,21 +32,17 @@ To learn about the project directory structure, see [project layout][layout_doc]
 
 #### A note on dependency management
 
-By default, `operator-sdk new` generates a `go.mod` file to be used with [Go modules][go_mod_wiki]. The `--repo=<path>` flag is required when creating a project outside of `$GOPATH/src`, as scaffolded files require a valid module path. If you'd like to use [`dep`][dep_tool], set `--dep-manager=dep` when initializing your project, which will create a `Gopkg.toml` file with the same dependency information.
-
-##### Go modules
-
-If using Go modules (the default dependency manager) in your project, ensure you activate module support before using the SDK. From the [Go modules Wiki][go_mod_wiki]:
+`operator-sdk new` generates a `go.mod` file to be used with [Go modules][go_mod_wiki]. The `--repo=<path>` flag is required when creating a project outside of `$GOPATH/src`, as scaffolded files require a valid module path. Ensure you activate module support before using the SDK. From the [Go modules Wiki][go_mod_wiki]:
 
 > You can activate module support in one of two ways:
-> - Invoke the go command in a directory outside of the $GOPATH/src tree, with a valid go.mod file in the current directory or any parent of it and the environment variable GO111MODULE unset (or explicitly set to auto).
+> - Invoke the go command in a directory with a valid go.mod file in the current directory or any parent of it and the environment variable GO111MODULE unset (or explicitly set to auto).
 > - Invoke the go command with GO111MODULE=on environment variable set.
 
 ##### Vendoring
 
-By default, an operator's dependencies are managed with `modules` and `--vendor=false`, so calls to `go {build,clean,get,install,list,run,test}` by `operator-sdk` subcommands will use an external modules directory. Execute `go help modules` for more information.
+By default `--vendor=false`, so an operator's dependencies are downloaded and cached in the Go modules cache. Calls to `go {build,clean,get,install,list,run,test}` by `operator-sdk` subcommands will use an external modules directory. Execute `go help modules` for more information.
 
-The Operator SDK can create a [`vendor`][go_vendoring] directory for Go dependencies if the dependency manager is `modules` and the project is initialized with `--vendor=true`, or if the dependency manager is `dep` (which requires vendoring).
+The Operator SDK can create a [`vendor`][go_vendoring] directory for Go dependencies if the project is initialized with `--vendor=true`.
 
 #### Operator scope
 
@@ -66,6 +60,17 @@ mgr, err := manager.New(cfg, manager.Options{Namespace: namespace})
 By default this will be the namespace that the operator is running in. To watch all namespaces leave the namespace option empty:
 ```Go
 mgr, err := manager.New(cfg, manager.Options{Namespace: ""})
+```
+
+It is also possible to use the [MultiNamespacedCacheBuilder][multi-namespaced-cache-builder] to watch a specific set of namespaces:
+```Go
+var namespaces []string // List of Namespaces
+// Create a new Cmd to provide shared dependencies and start components
+mgr, err := manager.New(cfg, manager.Options{
+   NewCache: cache.MultiNamespacedCacheBuilder(namespaces),
+   MapperProvider:     restmapper.NewDynamicRESTMapper,
+   MetricsBindAddress: fmt.Sprintf("%s:%d", metricsHost, metricsPort),
+})
 ```
 
 By default the main program will set the manager's namespace using the value of `WATCH_NAMESPACE` env defined in `deploy/operator.yaml`.
@@ -101,13 +106,41 @@ After modifying the `*_types.go` file always run the following command to update
 $ operator-sdk generate k8s
 ```
 
-### OpenAPI validation
-To update the OpenAPI validation section in the CRD `deploy/crds/cache.example.com_memcacheds_crd.yaml`, run the following command.
+### Updating CRD manifests
+
+Now that `MemcachedSpec` and `MemcachedStatus` have fields and possibly annotations, the CRD corresponding to the API's group and kind must be updated. To do so, run the following command:
 
 ```console
-$ operator-sdk generate openapi
+$ operator-sdk generate crds
 ```
-This validation section allows Kubernetes to validate the properties in a Memcached Custom Resource when it is created or updated. An example of the generated YAML is as follows:
+
+**Notes:**
+- - Your CRD *must* specify exactly one [storage version][crd-storage-version]. Use the `+kubebuilder:storageversion` [marker][crd-markers] to indicate the GVK that should be used to store data by the API server. This marker should be in a comment above your `Memcached` type.
+
+[crd-storage-version]:https://kubernetes.io/docs/tasks/access-kubernetes-api/custom-resources/custom-resource-definition-versioning/#writing-reading-and-updating-versioned-customresourcedefinition-objects
+[crd-markers]:https://book.kubebuilder.io/reference/markers/crd.html
+[api-rules]: https://github.com/kubernetes/kubernetes/tree/36981002246682ed7dc4de54ccc2a96c1a0cbbdb/api/api-rules
+
+#### OpenAPI validation
+
+OpenAPIv3 schemas are added to CRD manifests in the `spec.validation` block when the manifests are generated. This validation block allows Kubernetes to validate the properties in a Memcached Custom Resource when it is created or updated.
+
+Markers (annotations) are available to configure validations for your API. These markers will always have a `+kubebuilder:validation` prefix. For example, adding an enum type specification can be done by adding the following marker:
+
+```go
+// +kubebuilder:validation:Enum=Lion;Wolf;Dragon
+type Alias string
+```
+
+Usage of markers in API code is discussed in the kubebuilder [CRD generation][generating-crd] and [marker][markers] documentation. A full list of OpenAPIv3 validation markers can be found [here][crd-markers].
+
+To update the CRD `deploy/crds/cache.example.com_memcacheds_crd.yaml`, run the following command:
+
+```console
+$ operator-sdk generate crds
+```
+
+An example of the generated YAML is as follows:
 
 ```YAML
 spec:
@@ -121,8 +154,12 @@ spec:
               type: integer
 ```
 
-To learn more about OpenAPI v3.0 validation schemas in Custom Resource Definitions, refer to the [Kubernetes Documentation][doc_validation_schema].
+To learn more about OpenAPI v3.0 validation schemas in Custom Resource Definitions, refer to the [Kubernetes Documentation][doc-validation-schema].
 
+[doc-validation-schema]: https://kubernetes.io/docs/tasks/access-kubernetes-api/custom-resources/custom-resource-definitions/#specifying-a-structural-schema
+[generating-crd]: https://book.kubebuilder.io/reference/generating-crd.html
+[markers]: https://book.kubebuilder.io/reference/markers.html
+[crd-markers]: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
 ## Add a new Controller
 
@@ -165,7 +202,7 @@ err := c.Watch(&source.Kind{Type: &appsv1.Deployment{}}, &handler.EnqueueRequest
 
 #### Controller configurations
 
-There are a number of useful configurations that can be made when initialzing a controller and declaring the watch parameters. For more details on these configurations consult the upstream [controller godocs][controller_godocs]. 
+There are a number of useful configurations that can be made when initialzing a controller and declaring the watch parameters. For more details on these configurations consult the upstream [controller godocs][controller_godocs].
 
 - Set the max number of concurrent Reconciles for the controller via the [`MaxConcurrentReconciles`][controller_options]  option. Defaults to 1.
   ```Go
@@ -212,7 +249,89 @@ return reconcile.Result{RequeueAfter: time.Second*5}, nil
 
 **Note:** Returning `Result` with `RequeueAfter` set is how you can periodically reconcile a CR.
 
-For a guide on Reconcilers, Clients, and interacting with resource Events, see the [Client API doc][doc_client_api].
+#### Reconcile Result Use Cases
+**The following are possible reconcile loop return options.**
+
+#### 1. With the error:
+
+If an error is encountered during processing the appropriate return option is to return an error.
+This results in the reconcile loop being re-triggered to run again.
+
+**Usage**
+```Go
+return reconcile.Result{}, err
+```
+
+**Example:**
+
+In the example below a `reconcile.Result{}, err` is used when there is an error reading the object.
+As a result the request is requeued for another try.
+```Go
+// Fetch the Memcached instance
+memcached := &cachev1alpha1.Memcached{}
+err := r.client.Get(context.TODO(), request.NamespacedName, memcached)
+if err != nil {
+  if errors.IsNotFound(err) {
+		...
+  }
+  // Error reading the object - requeue the request.
+  reqLogger.Error(err, "Failed to get Memcached")
+  return reconcile.Result{}, err
+}
+```
+
+#### 2. Without an error:
+
+There are several situations where although no error occured, the reconcile loop should signify
+during its return that it needs to run again.
+
+**Usage**
+```Go
+return reconcile.Result{Requeue: true}, nil
+```
+
+**Example:**
+
+In the example below a `reconcile.Result{Requeue: true}, nil` is used because a new resource is being created and as such there is the potential that further processing is required. Thus, the reconcile loop needs to trigger a requeue but there is no error associated with this requeue.
+As a result the request is requeued for another try.
+```Go
+// Define a new deployment
+dep := r.deploymentForMemcached(memcached)
+...
+
+// Deployment created successfully - return and requeue
+return reconcile.Result{Requeue: true}, nil
+```
+
+#### 3. Without an error and no need to requeue the request:
+
+In some situations, such as when the primary resource has been deleted, there is no need to
+requeue the request for another attempt
+
+**Usage**
+```Go
+return reconcile.Result{}, nil
+```
+
+**Example:**
+
+In the example below a `reconcile.Result{}, nil` is used because the Memcached resource was not found, and no further processing is required.  
+```Go
+// Fetch the Memcached instance
+memcached := &cachev1alpha1.Memcached{}
+err := r.client.Get(context.TODO(), request.NamespacedName, memcached)
+if err != nil {
+	if errors.IsNotFound(err) {
+		// Request object not found, could have been deleted after reconcile request.
+		// Owned objects are automatically garbage collected. For additional cleanup logic use finalizers.
+		// Return and don't requeue
+		reqLogger.Info("Memcached resource not found. Ignoring since object must be deleted")
+		return reconcile.Result{}, nil
+	}
+...
+```
+
+For a guide on Reconcilers, Clients, and interacting with resource Events, see the [Client API doc][doc_client_api] and the [controller-runtime documentation over reconcile][controller-runtime-reconcile-godoc].
 
 ## Build and run the operator
 
@@ -231,21 +350,18 @@ Once this is done, there are two ways to run the operator:
 
 **Note**: `operator-sdk build` invokes `docker build` by default, and optionally `buildah bud`. If using `buildah`, skip to the `operator-sdk build` invocation instructions below. If using `docker`, make sure your docker daemon is running and that you can run the docker client without sudo. You can check if this is the case by running `docker version`, which should complete without errors. Follow instructions for your OS/distribution on how to start the docker daemon and configure your access permissions, if needed.
 
-**Note**: If a `go.mod` file and a `vendor/` directory are present, run
+**Note**: If a `vendor/` directory is present, run
 
 ```sh
 $ go mod vendor
 ```
 
-or if a `Gopkg.toml` file is present run
-
-```sh
-$ dep ensure
-```
-
 before building the memcached-operator image.
 
-Build the memcached-operator image and push it to a registry:
+Build the memcached-operator image and push it to a registry.  Make sure to modify
+`quay.io/example/` in the example below to reference a container repository that
+you have access to. You can obtain an account for storing containers at
+repository sites such quay.io or hub.docker.com:
 ```sh
 $ operator-sdk build quay.io/example/memcached-operator:v0.0.1
 $ sed -i 's|REPLACE_IMAGE|quay.io/example/memcached-operator:v0.0.1|g' deploy/operator.yaml
@@ -287,10 +403,10 @@ Set the name of the operator in an environment variable:
 export OPERATOR_NAME=memcached-operator
 ```
 
-Run the operator locally with the default Kubernetes config file present at `$HOME/.kube/config`:
+Run the operator locally with the default Kubernetes config file present at `$HOME/.kube/config`. And watch the namespace `default`:
 
 ```sh
-$ operator-sdk up local --namespace=default
+$ operator-sdk run --local --watch-namespace=default
 2018/09/30 23:10:11 Go Version: go1.10.2
 2018/09/30 23:10:11 Go OS/Arch: darwin/amd64
 2018/09/30 23:10:11 operator-sdk Version: 0.0.6+git
@@ -299,6 +415,10 @@ $ operator-sdk up local --namespace=default
 ```
 
 You can use a specific kubeconfig via the flag `--kubeconfig=<path/to/kubeconfig>`.
+
+### 3. Deploy your Operator with the Operator Lifecycle Manager (OLM)
+
+OLM will manage creation of most if not all resources required to run your operator, using a bit of setup from other `operator-sdk` commands. Check out the [docs][cli-run-olm] for more information.
 
 ## Create a Memcached CR
 
@@ -396,6 +516,32 @@ $ kubectl delete -f deploy/service_account.yaml
 
 ## Advanced Topics
 
+### Manage CR status conditions
+
+An often-used pattern is to include `Conditions` in the status of custom resources. Conditions represent the latest available observations of an object's state (see the [Kubernetes API conventionsdocumentation][typical-status-properties] for more information).
+
+The `Conditions` field added to the `MemcachedStatus` struct simplifies the management of your CR's conditions. It:
+- Enables callers to add and remove conditions.
+- Ensures that there are no duplicates.
+- Sorts the conditions deterministically to avoid unnecessary repeated reconciliations.
+- Automatically handles the each condition's `LastTransitionTime`.
+- Provides helper methods to make it easy to determine the state of a condition.
+
+To use conditions in your custom resource, add a Conditions field to the Status struct in `_types.go`:
+
+```Go
+import (
+    "github.com/operator-framework/operator-sdk/pkg/status"
+)
+
+type MyAppStatus struct {
+    // Conditions represent the latest available observations of an object's state
+    Conditions status.Conditions `json:"conditions"`
+}
+```
+
+Then, in your controller, you can use [`Conditions`][godoc-conditions] methods to make it easier to set and remove conditions or check their current values.
+
 ### Adding 3rd Party Resources To Your Operator
 
 The operator's Manager supports the Core Kubernetes resource types as found in the client-go [scheme][scheme_package] package and will also register the schemes of all custom resource types defined in your project under `pkg/apis`.
@@ -417,7 +563,8 @@ To add a 3rd party resource to an operator, you must add it to the Manager's sch
 
 #### Register with the Manager's scheme
 
-Call the `AddToScheme()` function for your 3rd party resource and pass it the Manager's scheme via `mgr.GetScheme()`.
+Call the `AddToScheme()` function for your 3rd party resource and pass it the Manager's scheme via `mgr.GetScheme()`
+in `cmd/manager/main.go`.
 
 Example:
 ```go
@@ -446,10 +593,75 @@ func main() {
 }
 ```
 
+##### If 3rd party resource does not have `AddToScheme()` function
+
+Use the [SchemeBuilder][scheme_builder] package from controller-runtime to initialize a new scheme builder that can be used to register the 3rd party resource with the manager's scheme.
+
+Example of registering `DNSEndpoints` 3rd party resource from `external-dns`:
+
+```go
+import (
+  ...
+    "k8s.io/apimachinery/pkg/runtime/schema"
+    "sigs.k8s.io/controller-runtime/pkg/scheme"
+  ...
+   // DNSEndoints
+   externaldns "github.com/kubernetes-incubator/external-dns/endpoint"
+   metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+ )
+
+func main() {
+  ....
+
+  log.Info("Registering Components.")
+
+  schemeBuilder := &scheme.Builder{GroupVersion: schema.GroupVersion{Group: "externaldns.k8s.io", Version: "v1alpha1"}}
+  schemeBuilder.Register(&externaldns.DNSEndpoint{}, &externaldns.DNSEndpointList{})
+  if err := schemeBuilder.AddToScheme(mgr.GetScheme()); err != nil {
+    log.Error(err, "")
+    os.Exit(1)
+  }
+
+  ....
+
+  // Setup all Controllers
+  if err := controller.AddToManager(mgr); err != nil {
+    log.Error(err, "")
+    os.Exit(1)
+  }
+}
+```
+
+
+
 **NOTES:**
 
-* After adding new import paths to your operator project, run `go mod vendor` if a `go.mod` file and a `vendor/` directory are present (or `dep ensure` if a `Gopkg.toml` file is present) in the root of your project directory to fulfill these dependencies.
+* After adding new import paths to your operator project, run `go mod vendor` if a `vendor/` directory is present in the root of your project directory to fulfill these dependencies.
 * Your 3rd party resource needs to be added before add the controller in `"Setup all Controllers"`.
+
+#### Default Metrics exported with 3rd party resource
+
+By default, SDK operator projects are set up to [export metrics][metrics_doc] through `addMetrics` in `cmd/manager/main.go`. See that it will call the `serveCRMetrics`:
+
+
+```go
+func serveCRMetrics(cfg *rest.Config) error {
+    ...
+	filteredGVK, err := k8sutil.GetGVKsFromAddToScheme(apis.AddToScheme)
+	if err != nil {
+		return err
+	}
+
+    ...
+
+	// Generate and serve custom resource specific metrics.
+	err = kubemetrics.GenerateAndServeCRMetrics(cfg, ns, filteredGVK, metricsHost, operatorMetricsPort)
+	if err != nil {
+		return err
+	}
+```
+
+The `kubemetrics.GenerateAndServeCRMetrics` function requires an RBAC rule to list all GroupVersionKinds in the list of watched namespaces, so you might need to [filter](https://github.com/operator-framework/operator-sdk/blob/v0.15.2/pkg/k8sutil/k8sutil.go#L161) the kinds returned by [`k8sutil.GetGVKsFromAddToScheme`](https://godoc.org/github.com/operator-framework/operator-sdk/pkg/k8sutil#GetGVKsFromAddToScheme) more stringently to avoid authorization errors such as `Failed to list *unstructured.Unstructured`. You may also need to add a rule to LIST your third party API schemas and their dependent schemas not registered with the manager.
 
 ### Handle Cleanup on Deletion
 
@@ -565,7 +777,7 @@ func remove(list []string, s string) []string {
 
 To learn about how metrics work in the Operator SDK read the [metrics section][metrics_doc] of the user documentation.
 
-## Leader election
+### Leader election
 
 During the lifecycle of an operator it's possible that there may be more than 1 instance running at any given time e.g when rolling out an upgrade for the operator.
 In such a scenario it is necessary to avoid contention between multiple operator instances via leader election so that only one leader instance handles the reconciliation while the other instances are inactive but ready to take over when the leader steps down.
@@ -579,7 +791,7 @@ By default the SDK enables the leader-for-life implementation. However you shoul
 
 The following examples illustrate how to use the two options:
 
-### Leader for life
+#### Leader for life
 
 A call to `leader.Become()` will block the operator as it retries until it can become the leader by creating the configmap named `memcached-operator-lock`.
 
@@ -601,7 +813,7 @@ func main() {
 ```
 If the operator is not running inside a cluster `leader.Become()` will simply return without error to skip the leader election since it can't detect the operator's namespace.
 
-### Leader with lease
+#### Leader with lease
 
 The leader-with-lease approach can be enabled via the [Manager Options][manager_options] for leader election.
 
@@ -630,6 +842,7 @@ When the operator is not running in a cluster, the Manager will return an error 
 [event_filtering]:./user/event-filtering.md
 [controller_options]: https://godoc.org/github.com/kubernetes-sigs/controller-runtime/pkg/controller#Options
 [controller_godocs]: https://godoc.org/github.com/kubernetes-sigs/controller-runtime/pkg/controller
+[controller-runtime-reconcile-godoc]: https://godoc.org/github.com/kubernetes-sigs/controller-runtime/pkg/reconcile#Reconciler
 [operator_scope]:./operator-scope.md
 [install_guide]: ./user/install-operator-sdk.md
 [pod_eviction_timeout]: https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/#options
@@ -645,7 +858,6 @@ When the operator is not running in a cluster, the Manager will return an error 
 [homebrew_tool]:https://brew.sh/
 [go_mod_wiki]: https://github.com/golang/go/wiki/Modules
 [go_vendoring]: https://blog.gopheracademy.com/advent-2015/vendor-folder/
-[dep_tool]:https://golang.github.io/dep/docs/installation.html
 [git_tool]:https://git-scm.com/downloads
 [go_tool]:https://golang.org/dl/
 [docker_tool]:https://docs.docker.com/install/
@@ -662,4 +874,8 @@ When the operator is not running in a cluster, the Manager will return an error 
 [result_go_doc]: https://godoc.org/github.com/kubernetes-sigs/controller-runtime/pkg/reconcile#Result
 [metrics_doc]: ./user/metrics/README.md
 [quay_link]: https://quay.io
-[doc_validation_schema]: https://kubernetes.io/docs/tasks/access-kubernetes-api/custom-resources/custom-resource-definitions/#specifying-a-structural-schema
+[multi-namespaced-cache-builder]: https://godoc.org/github.com/kubernetes-sigs/controller-runtime/pkg/cache#MultiNamespacedCacheBuilder
+[scheme_builder]: https://godoc.org/sigs.k8s.io/controller-runtime/pkg/scheme#Builder
+[typical-status-properties]: https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
+[godoc-conditions]: https://godoc.org/github.com/operator-framework/operator-sdk/pkg/status#Conditions
+[cli-run-olm]: https://github.com/operator-framework/operator-sdk/blob/v0.17.0/doc/user/olm-catalog/generating-a-csv.md
